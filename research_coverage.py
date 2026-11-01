@@ -20,7 +20,7 @@ def structured_text(facts):
     return "\n".join(json.dumps({k: f[k] for k in fields if k in f}, ensure_ascii=False) for f in facts)
 
 
-def conservation_issues(element, facts, state):
+def conservation_issues(element, facts, state, *, complete_raw_table=False):
     if state in ("unresolved", "unreadable", "no_research"):
         return []
     text = element["text"]
@@ -38,11 +38,12 @@ def conservation_issues(element, facts, state):
     for match in MEASUREMENT.finditer(text):
         if METRIC_LABEL.search(match["label"]) and missing_numbers(match["value"], preserved):
             issues.append(f"원문 지표 값 미보존: {match['label'].strip()} = {match['value']}{match['unit'] or ''}")
-    for match in DURATION.finditer(text):
-        # A spaced leading digit in standard OCR is ambiguous (e.g. '6 4ms').
-        # Its independently re-read counterpart is checked in its own ledger row.
-        if re.search(r"\d[ \t]+$", text[:match.start()]):
-            continue
-        if missing_numbers(match["value"], preserved):
-            issues.append(f"원문 시간 수치 미보존: {match['value']}{match['unit']}")
+    if not complete_raw_table:
+        for match in DURATION.finditer(text):
+            # A spaced leading digit in standard OCR is ambiguous (e.g. '6 4ms').
+            # Its independently re-read counterpart is checked in its own ledger row.
+            if re.search(r"\d[ \t]+$", text[:match.start()]):
+                continue
+            if missing_numbers(match["value"], preserved):
+                issues.append(f"원문 시간 수치 미보존: {match['value']}{match['unit']}")
     return list(dict.fromkeys(issues))

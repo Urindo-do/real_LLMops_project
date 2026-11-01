@@ -141,6 +141,11 @@ def extract_evidence(pdf, engine):
 
 
 def render_evidence(package):
+    active_exclusions = {}
+    for record in package.get("human_evidence_exclusions", []):
+        if record.get("exclusion_id"):
+            active_exclusions[record["exclusion_id"]] = record
+    active_exclusions = [record for record in active_exclusions.values() if record.get("active")]
     lines = [f"# {package['title']} — 자동 추출 연구 근거", "", "기계 추출·원문 대조 결과이며 독립적인 사실 검증이 아닙니다.", "",
              f"후보 {len(package['items'])}개 / 작성용 {len(package['writing_fact_ids'])}개", ""]
     if completion := package.get("completion"):
@@ -150,14 +155,37 @@ def render_evidence(package):
         lines += ["- 미해결: " + issue for issue in completion["unresolved_source_items"]]
         lines.append("")
     for item in package["items"]:
-        lines += [f"## {item['id']} · {KINDS[item['kind']]} · {STATUSES[item['claim_status']]}", "", item["statement"], "",
+        fact_exclusion = next((record for record in active_exclusions
+                               if record.get("target_type") == "fact" and record.get("fact_id") == item["id"]), None)
+        lines += [f"## {item['id']} · {KINDS[item['kind']]} · {STATUSES[item['claim_status']]}"
+                  + (" · 사람이 작성에서 제외" if fact_exclusion else ""), "", item["statement"], "",
                   f"원문 대조: {SUPPORT[item['support']]} — {item['support_note']}", "", "해석 한계: " + item["limits"], ""]
+        if fact_exclusion:
+            lines += ["사람이 작성에서 제외한 이유: " + fact_exclusion.get("reason", "미기록")
+                      + ((" — " + fact_exclusion["reason_detail"]) if fact_exclusion.get("reason_detail") else ""), ""]
         lines += ["- 조건: " + condition for condition in item["conditions"]]
         lines += [f"- 설정: {p['name']} = {p['value']} ({p['value_kind']}) / {', '.join(p['element_ids'])}" for p in item.get("parameters", [])]
         lines += ["- 정성 관찰: " + observation for observation in item.get("observations", [])]
         lines += ["- 문장 수치 검사: " + issue for issue in item.get("numeric_issues", [])]
         lines += [f"- 측정: {m['metric']} = {m['value']} {m['unit']} ({m['condition']}) / {', '.join(m['element_ids'])}" for m in item["measurements"]]
-        lines += [f"- 확인 필요 수치 (작성 제외): {m['metric']} = {m['value']} {m['unit']} — {m['validation_error']}" for m in item.get("rejected_measurements", [])]
+        excluded_measurement_records = [record for record in active_exclusions
+            if record.get("target_type") == "measurement" and record.get("fact_id") == item["id"]]
+        excluded_measurement_decisions = {}
+        for record in excluded_measurement_records:
+            original = record.get("original_measurement")
+            match = next((index for index, measure in enumerate(item.get("rejected_measurements", []))
+                          if index not in excluded_measurement_decisions and measure == original), None)
+            if match is not None:
+                excluded_measurement_decisions[match] = record
+        for index, measure in enumerate(item.get("rejected_measurements", [])):
+            if index in excluded_measurement_decisions:
+                record = excluded_measurement_decisions[index]
+                reason = record.get("reason", "미기록")
+                if record.get("reason_detail"):
+                    reason += " — " + record["reason_detail"]
+                lines.append(f"- 사람이 사용하지 않기로 한 측정값: {measure['metric']} = {measure['value']} {measure['unit']} — {reason}")
+            else:
+                lines.append(f"- 확인 필요 수치 (작성 제외): {measure['metric']} = {measure['value']} {measure['unit']} — {measure['validation_error']}")
         for source in item["sources"]:
             lines += ["", f"출처: {source['page']}쪽 · {source['element_id']}", ""]
             lines += ["> " + line for line in source["quote"].splitlines()]
