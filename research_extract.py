@@ -146,6 +146,9 @@ def render_evidence(package):
         if record.get("exclusion_id"):
             active_exclusions[record["exclusion_id"]] = record
     active_exclusions = [record for record in active_exclusions.values() if record.get("active")]
+    duplicate_exclusions = {fact_id: record for record in package.get("human_duplicate_decisions", [])
+                            if record.get("decision") == "keep_one"
+                            for fact_id in record.get("excluded_fact_ids", [])}
     lines = [f"# {package['title']} — 자동 추출 연구 근거", "", "기계 추출·원문 대조 결과이며 독립적인 사실 검증이 아닙니다.", "",
              f"후보 {len(package['items'])}개 / 작성용 {len(package['writing_fact_ids'])}개", ""]
     if completion := package.get("completion"):
@@ -154,16 +157,55 @@ def render_evidence(package):
                   "대장 검토는 문서 전체의 의미적 정확성을 독립적으로 보증하지 않습니다.", ""]
         lines += ["- 미해결: " + issue for issue in completion["unresolved_source_items"]]
         lines.append("")
+    duplicate_review = package.get("semantic_duplicate_review") or {}
+    recovery = package.get("evidence_recovery") or {}
+    if recovery:
+        counts = recovery.get("counts", {})
+        lines += ["## 미확인 근거 복구", "",
+                  f"복구 {counts.get('repaired', 0)}개 / 중복 연결 확인 대기 "
+                  f"{counts.get('duplicate_confirmation', 0)}개 / 미해결 {counts.get('unresolved', 0)}개", ""]
+        for record in recovery.get("records", []):
+            if record.get("status") == "repaired":
+                lines += [f"- {record['fact_id']}: " + record.get("proposal", {}).get("reason", "원문 대조 후 수정")]
+        lines.append("")
+    if duplicate_review.get("status") not in (None, "not_reviewed"):
+        labels = {"duplicate": "같은 내용", "subsumes": "한쪽이 더 자세함",
+                  "complementary": "서로 보완", "related": "관련 있지만 별개",
+                  "contradictory": "서로 모순", "uncertain": "판정 불확실"}
+        decisions = {item.get("group_id"): item for item in package.get("human_duplicate_decisions", [])}
+        lines += ["## 의미상 중복 후보 검토", "",
+                  f"후보 {duplicate_review.get('candidate_pair_count', 0)}쌍 / 묶인 후보 "
+                  f"{duplicate_review.get('grouped_candidate_pair_count', duplicate_review.get('candidate_pair_count', 0))}쌍 "
+                  f"/ 묶음 {len(duplicate_review.get('groups', []))}개 / 미배정 "
+                  f"{duplicate_review.get('unassigned_candidate_pair_count', 0)}쌍 · 상태 {duplicate_review.get('status')}", ""]
+        for group in duplicate_review.get("groups", []):
+            decision = decisions.get(group.get("group_id"))
+            if not decision:
+                human_decision = "아직 결정하지 않음"
+            elif decision.get("decision") == "keep_both":
+                human_decision = "둘 다 유지"
+            else:
+                human_decision = ", ".join(decision.get("kept_fact_ids", [])) + "만 작성용 유지"
+            lines += [f"### {labels.get(group.get('relation'), '판정 대기')} · {group.get('group_id')}", "",
+                      "근거 ID: " + ", ".join(group.get("fact_ids", [])),
+                      "에이전트 검토: " + group.get("reason", "검토 대기"),
+                      "사람 결정: " + human_decision, ""]
     for item in package["items"]:
         fact_exclusion = next((record for record in active_exclusions
                                if record.get("target_type") == "fact" and record.get("fact_id") == item["id"]), None)
+        duplicate_exclusion = duplicate_exclusions.get(item["id"])
+        human_exclusion = fact_exclusion or duplicate_exclusion
         lines += [f"## {item['id']} · {KINDS[item['kind']]} · {STATUSES[item['claim_status']]}"
-                  + (" · 사람이 작성에서 제외" if fact_exclusion else ""), "", item["statement"], "",
+                  + (" · 사람이 작성에서 제외" if human_exclusion else ""), "", item["statement"], "",
                   f"원문 대조: {SUPPORT[item['support']]} — {item['support_note']}", "", "해석 한계: " + item["limits"], ""]
         if fact_exclusion:
             lines += ["사람이 작성에서 제외한 이유: " + fact_exclusion.get("reason", "미기록")
                       + ((" — " + fact_exclusion["reason_detail"]) if fact_exclusion.get("reason_detail") else ""), ""]
+        elif duplicate_exclusion:
+            lines += ["사람이 의미 중복으로 제외함. 작성용 유지 근거: "
+                      + ", ".join(duplicate_exclusion.get("kept_fact_ids", [])), ""]
         lines += ["- 조건: " + condition for condition in item["conditions"]]
+        lines += ["- 원문에 남은 한계: " + value for value in item.get("evidence_limitations", [])]
         lines += [f"- 설정: {p['name']} = {p['value']} ({p['value_kind']}) / {', '.join(p['element_ids'])}" for p in item.get("parameters", [])]
         lines += ["- 정성 관찰: " + observation for observation in item.get("observations", [])]
         lines += ["- 문장 수치 검사: " + issue for issue in item.get("numeric_issues", [])]

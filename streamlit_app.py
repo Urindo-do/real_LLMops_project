@@ -232,6 +232,24 @@ with st.sidebar:
             st.session_state["evidence_preview_only"] = True
         else:
             st.info("이 자료의 완료 결과가 아직 없습니다. 추출이 끝난 뒤 다시 불러와 주세요.")
+    recovery_available = bool(st.session_state.get("research_evidence_extraction") or (adaptive and local_input))
+    if st.button("미확인 근거 복구·중복 연결 검토", key="sidebar_recover_pending_evidence",
+                 use_container_width=True, disabled=not recovery_available):
+        try:
+            from research_extract_v3 import load_saved_evidence, run_unconfirmed_recovery
+            from planned_paper import PlannedPaper
+            evidence = st.session_state.get("research_evidence_extraction")
+            if evidence is None and adaptive and local_input:
+                evidence = load_saved_evidence(local_input, BASE_DIR)
+            if evidence is None:
+                st.info("완료된 저장 근거가 없습니다. 먼저 연구 근거를 추출해주세요.")
+            else:
+                with st.spinner("미확인 근거를 복구하고 중복 관계를 확인 중입니다..."):
+                    run_unconfirmed_recovery(evidence, PlannedPaper(base_dir=BASE_DIR))
+                st.session_state["research_evidence_extraction"] = evidence
+                st.session_state["evidence_preview_only"] = True
+        except (OSError, RuntimeError, ValueError, TypeError) as error:
+            st.error(f"미확인 근거 재검토 중 오류가 발생했습니다: {error}")
 
 if structure_reference:
     with st.expander("골든 샘플 구조·작성 가이드", expanded=False):

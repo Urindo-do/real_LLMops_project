@@ -37,6 +37,8 @@ def normalize_research(data):
         for field in ("kind", "claim_status", "source_origin", "support", "support_note", "conditions", "measurements", "parameters", "observations", "numeric_issues", "writing_role", "attribution_preserved"):
             if field in fact:
                 normalized[-1][field] = copy.deepcopy(fact[field])
+        if "evidence_limitations" in fact:
+            normalized[-1]["evidence_limitations"] = copy.deepcopy(fact["evidence_limitations"])
         seen.add(identifier)
     title = data.get("title") or data.get("document_title") or data.get("project_name")
     if not isinstance(title, str) or not title.strip():

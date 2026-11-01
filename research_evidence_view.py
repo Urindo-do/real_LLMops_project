@@ -5,7 +5,8 @@ from pathlib import Path
 import streamlit as st
 
 from research_extract import KINDS, SUPPORT, render_evidence
-from research_extract_v3 import ORIGINS as ORIGIN_VALUES, STATUSES as V3_STATUSES
+from research_extract_v3 import ORIGINS as ORIGIN_VALUES, STATUSES as V3_STATUSES, writing_eligible
+from research_dedup import RELATION_LABELS
 
 ORIGIN_LABELS = {"research_note": "연구노트", "measurement_log": "실행·측정 로그", "implementation_code": "구현 코드",
                  "quoted_instruction": "인용된 안내·요청", "ai_advice": "AI 조언", "unknown": "확인 필요"}
@@ -94,6 +95,8 @@ def _render_exclusion_control(package, fact, target_type="fact", measure=None, i
     if target_type == "fact":
         active = next((record for record in exclusions
                        if record.get("target_type") == "fact" and record.get("fact_id") == fact["id"]), None)
+        duplicate_decision = next((record for record in package.get("human_duplicate_decisions", [])
+            if record.get("decision") == "keep_one" and fact["id"] in record.get("excluded_fact_ids", [])), None)
         target_id = fact["id"]
         original_measurement = None
     else:
@@ -109,6 +112,10 @@ def _render_exclusion_control(package, fact, target_type="fact", measure=None, i
         st.caption(f"사람이 {kind} 작성에서 제외함 · 사유: {active.get('reason', '미기록')}"
                    + (f" ({active['reason_detail']})" if active.get("reason_detail") else ""))
         _restore_exclusion(package, active, key_scope)
+        return
+    if target_type == "fact" and duplicate_decision:
+        st.caption("사람이 의미 중복으로 작성에서 제외함 · 작성용 유지: "
+                   + ", ".join(duplicate_decision.get("kept_fact_ids", [])))
         return
 
     reasons = {"": "이유를 선택하세요", "duplicate": "다른 근거와 중복", "not_research": "연구 내용이 아님",
@@ -206,6 +213,164 @@ def _render_fact_approval(package, fact, context):
             st.error(f"사실을 반영하지 못했습니다: {error}")
 
 
+def _duplicate_decision_is_current(package, group, decision):
+    if decision.get("decision") == "keep_both":
+        return True
+    writing_ids = set(package.get("writing_fact_ids", []))
+    return not (set(decision.get("excluded_fact_ids", [])) & writing_ids)
+
+
+def _render_semantic_duplicate_review(package):
+    review = package.get("semantic_duplicate_review") or {}
+    if review.get("status") in (None, "not_reviewed"):
+        st.info("이 저장된 추출물에는 의미 중복 에이전트 검토가 없습니다. 아래 버튼으로 후보 묶기와 원문 문맥 검토만 실행할 수 있습니다.")
+        if not package.get("source_archive_path") or not package.get("run_dir"):
+            st.warning("원문 문맥 자료가 없어 중복 후보 검토를 실행할 수 없습니다.")
+            return
+        if st.button("저장된 근거의 의미 중복 검토 실행", key="run_saved_semantic_dedup"):
+            try:
+                from planned_paper import PlannedPaper
+                from research_extract_v3 import apply_saved_duplicate_decisions, run_semantic_duplicate_review
+                engine = PlannedPaper(base_dir=Path(__file__).resolve().parent)
+                with st.spinner("코드가 후보를 묶고 에이전트가 원문 문맥을 대조 중입니다..."):
+                    run_semantic_duplicate_review(package, engine)
+                    apply_saved_duplicate_decisions(package)
+                st.rerun()
+            except (OSError, RuntimeError, ValueError, TypeError) as error:
+                st.error(f"중복 후보를 검토하지 못했습니다: {error}")
+        return
+
+    groups = review.get("groups", [])
+    if review.get("status") == "needs_refresh":
+        st.info("근거 수정으로 일부 중복 묶음의 재검토가 필요합니다.")
+        if st.button("변경된 근거의 중복 검토 갱신", key="refresh_semantic_dedup"):
+            try:
+                from planned_paper import PlannedPaper
+                from research_extract_v3 import run_semantic_duplicate_review, apply_saved_duplicate_decisions
+                with st.spinner("수정된 근거의 중복 관계를 확인 중입니다..."):
+                    run_semantic_duplicate_review(package, PlannedPaper(base_dir=Path(__file__).resolve().parent))
+                    apply_saved_duplicate_decisions(package)
+                st.rerun()
+            except (OSError, RuntimeError, ValueError, TypeError) as error:
+                st.error(f"중복 관계를 갱신하지 못했습니다: {error}")
+    st.caption(f"코드 후보 {review.get('candidate_pair_count', 0)}쌍 중 "
+               f"{review.get('grouped_candidate_pair_count', review.get('candidate_pair_count', 0))}쌍을 "
+               f"{len(groups)}개 묶음으로 구성했습니다. "
+               f"미배정 또는 재검토가 필요한 후보: {review.get('unassigned_candidate_pair_count', 0)}쌍. "
+               f"에이전트 검토 상태: {review.get('status', '확인 필요')}.")
+    st.caption("후보 묶기는 중복 가능성을 찾는 단계입니다. 자동으로 근거를 제거하지 않으며, 에이전트 판단도 사람이 선택하기 전에는 작성 입력을 바꾸지 않습니다.")
+    for error in review.get("review_errors", []):
+        st.warning(error)
+    source_path = package.get("source_archive_path", "")
+    try:
+        modified_ns = Path(source_path).stat().st_mtime_ns
+    except (OSError, TypeError):
+        modified_ns = 0
+    elements = _load_source_elements(source_path, modified_ns)
+    facts_by_id = {fact["id"]: fact for fact in package.get("items", [])}
+    decisions = {record.get("group_id"): record for record in package.get("human_duplicate_decisions", [])}
+    writing_ids = set(package.get("writing_fact_ids", []))
+    manually_excluded = {record.get("fact_id") for record in package.get("human_evidence_exclusions", [])
+                         if record.get("active") and record.get("target_type") == "fact"}
+    with st.expander(f"의미상 중복 후보 검토 ({len(groups)}개 묶음)", expanded=bool(groups)):
+        if not groups:
+            st.caption("코드 후보 필터가 찾은 항목이 없습니다. 이것만으로 문서 전체에 의미상 중복이 없다고 보장하지는 않습니다.")
+        for group in groups:
+            fact_ids = group.get("fact_ids", [])
+            members = [facts_by_id[fact_id] for fact_id in fact_ids if fact_id in facts_by_id]
+            relation = group.get("relation", "uncertain")
+            title = f"{RELATION_LABELS.get(relation, '판정 대기')} · {len(members)}개 근거"
+            saved = decisions.get(group.get("group_id"))
+            resolved = bool(saved and _duplicate_decision_is_current(package, group, saved))
+            if resolved:
+                title += " · 사람 검토 완료"
+            with st.expander(title, expanded=not resolved):
+                for edge in group.get("candidate_edges", []):
+                    if edge.get("shared_source_ids"):
+                        st.caption("같은 원문 요소를 공유합니다.")
+                    elif edge.get("exact_normalized_statement"):
+                        st.caption("정규화한 문장이 같습니다.")
+                if group.get("review_status") == "reviewed":
+                    st.write(f"에이전트 판정: **{RELATION_LABELS.get(relation, relation)}** · 신뢰도 {group.get('confidence', '확인 필요')}")
+                    st.write(group.get("reason", ""))
+                    if group.get("recommended_keep_fact_id"):
+                        st.info("에이전트가 대표 후보로 제안: " + group["recommended_keep_fact_id"])
+                else:
+                    st.warning(group.get("reason", "에이전트 판정을 받지 못했습니다. 둘 다 유지하거나 직접 검토하세요."))
+
+                for start in range(0, len(members), 2):
+                    columns = st.columns(2)
+                    for column, fact in zip(columns, members[start:start + 2]):
+                        with column:
+                            status = "현재 작성용" if fact["id"] in writing_ids else "현재 작성 제외"
+                            st.markdown(f"**{fact['id']} · {KINDS.get(fact.get('kind'), fact.get('kind'))} · {status}**")
+                            st.write(fact.get("statement", ""))
+                            if fact.get("limits"):
+                                st.caption("한계: " + fact["limits"])
+                            for limitation in fact.get("evidence_limitations", []):
+                                st.caption("원문에 남은 한계: " + limitation)
+                            if fact.get("observations"):
+                                st.write("관찰: " + " / ".join(fact["observations"]))
+                            if fact.get("parameters"):
+                                st.write("설정: " + " / ".join(f"{value.get('name')}={value.get('value')}"
+                                                           for value in fact["parameters"]))
+                            if fact.get("rejected_measurements"):
+                                st.warning("확인되지 않은 측정값이 남아 있습니다. 중복 처리 전에 측정 내용도 확인하세요.")
+                            st.caption(f"주장: {V3_STATUSES.get(fact.get('claim_status'), fact.get('claim_status'))} · "
+                                       f"뒷받침: {SUPPORT.get(fact.get('support'), fact.get('support'))}")
+                            if fact.get("conditions"):
+                                st.write("조건: " + " / ".join(fact["conditions"]))
+                            if fact.get("measurements"):
+                                st.write("측정: " + " / ".join(
+                                    f"{m.get('metric')} {m.get('value')} {m.get('unit')} ({m.get('condition')})"
+                                    for m in fact["measurements"]))
+                            with st.expander(f"{fact['id']}의 원문 문맥", expanded=False):
+                                _render_source_context(_context_for_fact(elements, fact))
+
+                if resolved:
+                    kept = saved.get("kept_fact_ids", [])
+                    if saved.get("decision") == "keep_both":
+                        st.success("사람 결정: 두 근거를 모두 유지")
+                    else:
+                        st.success("사람 결정: " + ", ".join(kept) + "만 작성용으로 유지")
+                    revise = st.checkbox("사람 결정을 수정", key=f"{group['group_id']}_revise")
+                    if not revise:
+                        continue
+                eligible = [fact_id for fact_id in fact_ids if fact_id in facts_by_id
+                            and writing_eligible(facts_by_id[fact_id]) and fact_id not in manually_excluded]
+                decision_options = ["keep_both", "keep_one"] if eligible else ["keep_both"]
+                default_decision = saved.get("decision") if saved else None
+                if default_decision not in decision_options:
+                    default_decision = "keep_one" if group.get("relation") in ("duplicate", "subsumes") and eligible else "keep_both"
+                with st.form(f"semantic_duplicate_decision_{group['group_id']}"):
+                    decision = st.radio("작성용으로 어떻게 처리할까요?", decision_options,
+                        index=decision_options.index(default_decision),
+                        format_func=lambda value: "둘 다 유지" if value == "keep_both" else "하나만 유지",
+                        key=f"{group['group_id']}_decision")
+                    keep_fact_id = None
+                    if eligible:
+                        suggested = ((saved.get("kept_fact_ids") or [group.get("recommended_keep_fact_id")])[0]
+                                     if saved and saved.get("decision") == "keep_one"
+                                     else group.get("recommended_keep_fact_id"))
+                        default_index = eligible.index(suggested) if suggested in eligible else 0
+                        keep_fact_id = st.selectbox("대표로 유지할 작성용 근거", eligible,
+                            index=default_index, format_func=lambda value: f"{value} · {facts_by_id[value]['statement'][:70]}",
+                            key=f"{group['group_id']}_keep")
+                    confirmed = st.checkbox("원문 문맥을 확인했고 이 결정을 적용합니다.",
+                                            key=f"{group['group_id']}_confirmed")
+                    submitted = st.form_submit_button("사람 결정 저장")
+                if submitted:
+                    if not confirmed:
+                        st.warning("원문 문맥 확인 체크 후 저장할 수 있습니다.")
+                        continue
+                    try:
+                        from research_extract_v3 import resolve_semantic_duplicate_group
+                        resolve_semantic_duplicate_group(package, group["group_id"], decision, keep_fact_id)
+                        st.rerun()
+                    except (OSError, ValueError, TypeError) as error:
+                        st.error(f"중복 결정을 저장하지 못했습니다: {error}")
+
+
 def _render_measurement_approval(package, fact, measure, index, context):
     from research_extract_v3 import approve_rejected_measurement, measurement_review_id
 
@@ -247,6 +412,48 @@ def _render_measurement_approval(package, fact, measure, index, context):
             st.error(f"측정값을 반영하지 못했습니다: {error}")
 
 
+def _render_recovery_controls(package):
+    report = package.get("evidence_recovery") or {}
+    from research_recovery import VERSION as RECOVERY_VERSION
+    if report and report.get("version") != RECOVERY_VERSION:
+        st.info("아래 결과는 이전 복구 기준으로 검토됐습니다. 복구 버튼을 누르면 개선된 기준으로 미확인 항목을 다시 검토합니다.")
+    st.caption("미확인 항목을 승인된 근거와 먼저 비교하고, 나머지는 원문 문맥으로 수정한 뒤 별도 검증합니다.")
+    if package.get("run_dir") and package.get("source_archive_path"):
+        if st.button("미확인 근거 복구·중복 연결 검토", key="recover_pending_evidence"):
+            try:
+                from planned_paper import PlannedPaper
+                from research_extract_v3 import run_unconfirmed_recovery
+                with st.spinner("중복 관계·문제 부분을 검토하고 수정된 페이지의 수집 대장을 재확인 중입니다..."):
+                    run_unconfirmed_recovery(package, PlannedPaper(base_dir=Path(__file__).resolve().parent))
+                st.rerun()
+            except (OSError, RuntimeError, ValueError, TypeError) as error:
+                st.error(f"미확인 근거를 재검토하지 못했습니다: {error}")
+    if not report:
+        return
+    counts = report.get("counts", {})
+    st.write(f"마지막 자동 검토: 복구 {counts.get('repaired', 0)}개 · 중복 연결 제안 "
+             f"{counts.get('duplicate_confirmation', 0)}개 · 미해결 {counts.get('unresolved', 0)}개")
+    from research_recovery import unresolved_reason_summary
+    reasons = unresolved_reason_summary(report)
+    if reasons:
+        with st.expander("미해결 항목이 남은 이유", expanded=False):
+            for reason, count in reasons:
+                st.write(f"{reason}: {count}개")
+    for error in report.get("errors", []) + report.get("ledger_recheck_errors", []):
+        st.warning(error)
+    with st.expander("자동 복구 전후와 검토 이유", expanded=False):
+        for record in report.get("records", []):
+            if record.get("status") != "repaired":
+                continue
+            st.markdown(f"**{record['fact_id']}**")
+            columns = st.columns(2)
+            columns[0].write("수정 전: " + record["original"]["statement"])
+            columns[1].write("수정 후: " + record["applied"]["statement"])
+            st.caption(record.get("proposal", {}).get("reason", ""))
+            for limitation in record["applied"].get("evidence_limitations", []):
+                st.write("원문 한계: " + limitation)
+
+
 def _render_measurement_review(package):
     fact_reviews = package.get("human_fact_reviews", [])
     measurement_reviews = package.get("human_measurement_reviews", [])
@@ -281,6 +488,9 @@ def _render_measurement_review(package):
     from research_extract_v3 import human_excluded_measurement_indices
 
     excluded_fact_ids = {record["fact_id"] for record in exclusions if record.get("target_type") == "fact"}
+    excluded_fact_ids.update(fact_id for record in package.get("human_duplicate_decisions", [])
+                             if record.get("decision") == "keep_one"
+                             for fact_id in record.get("excluded_fact_ids", []))
     excluded_measurements = human_excluded_measurement_indices(package)
     pending = [item for item in package.get("items", []) if item["id"] not in excluded_fact_ids
                and (len(item.get("rejected_measurements", [])) > len(excluded_measurements.get(item["id"], set()))
@@ -297,6 +507,10 @@ def _render_measurement_review(package):
         modified_ns = 0
     elements = _load_source_elements(source_path, modified_ns)
     from research_extract_v3 import writing_eligible
+    from research_recovery import current_duplicate_suggestions
+    duplicate_suggestions = current_duplicate_suggestions(package)
+    recovery_records = {record["fact_id"]: record for record in
+                        package.get("evidence_recovery", {}).get("records", [])}
 
     pending_by_page = {}
     for item in pending:
@@ -325,6 +539,33 @@ def _render_measurement_review(package):
         with st.expander(title, expanded=False):
             st.markdown("**현재 사실 요약**")
             st.write(item.get("statement", ""))
+            duplicate = duplicate_suggestions.get(fact_id)
+            if duplicate:
+                representative = next(fact for fact in package["items"]
+                                      if fact["id"] == duplicate["representative_fact_id"])
+                st.info("이미 승인된 대표 근거에 전체 내용이 포함된 것으로 재검토됐습니다.")
+                st.write("대표 근거: " + representative["statement"])
+                st.caption("대표 근거의 한계: " + representative.get("limits", ""))
+                with st.expander("대표 근거의 원문과 문맥", expanded=False):
+                    _render_source_context(_context_for_fact(elements, representative))
+                st.caption(duplicate.get("verification", {}).get("note", ""))
+                confirmed = st.checkbox("두 근거와 원문을 확인했고 대표 근거로 묶습니다.", key=f"{fact_id}_cover_confirmed")
+                if st.button("대표 근거에 묶고 중복 항목 제외", key=f"{fact_id}_cover_apply"):
+                    if confirmed:
+                        try:
+                            from research_extract_v3 import confirm_recovered_duplicate
+                            from planned_paper import PlannedPaper
+                            with st.spinner("중복 결정을 저장하고 해당 원문의 수집 대장을 재확인 중입니다..."):
+                                confirm_recovered_duplicate(package, fact_id,
+                                    PlannedPaper(base_dir=Path(__file__).resolve().parent))
+                            st.rerun()
+                        except (OSError, RuntimeError, ValueError, TypeError) as error:
+                            st.error(f"중복 결정을 반영하지 못했습니다: {error}")
+                    else:
+                        st.warning("원문 확인 체크 후 적용할 수 있습니다.")
+            elif fact_id in recovery_records:
+                record = recovery_records[fact_id]
+                st.caption("자동 재검토: " + record.get("reason", record.get("proposal", {}).get("reason", "미해결")))
             for line in _problem_lines(item, excluded_indices):
                 st.warning(line)
             context = _context_for_fact(elements, item)
@@ -346,7 +587,9 @@ def render_research_evidence(package):
     with st.expander("연구 근거 자동 추출 결과", expanded=True):
         st.caption("자동 분류와 원문 대조 결과입니다. 독립적인 사실 검증은 아니며 원문 해석·비교 조건은 저자 확인이 필요합니다.")
         st.write(f"후보 {stats['candidates']}개 · 측정값 {stats['measurements']}개 · 작성용 {stats['writing_facts']}개")
+        _render_recovery_controls(package)
         _render_measurement_review(package)
+        _render_semantic_duplicate_review(package)
         structured_tables = package.get("structured_tables", [])
         if structured_tables:
             st.write(f"표 구조화: {stats.get('complete_structured_tables', 0)}/{stats.get('structured_tables', len(structured_tables))}개 완전 보존")
