@@ -16,11 +16,15 @@ def render_requirement_evidence(package):
                    ", ".join(str(p) for p in package["completion"]["pending_extraction_pages"]) +
                    "쪽. 원응답과 검증 사유는 실행 폴더의 pages에 보존했습니다.")
     labels = {"sufficient": "충족", "partial": "일부 부족", "missing": "근거 부족",
-              "not_applicable": "해당 없음", "applicability_uncertain": "적용 여부 미확인", "excluded_by_user": "사용자 지시로 제외"}
+              "not_applicable": "해당 없음", "applicability_uncertain": "적용 여부 미확인", "excluded_by_user": "사용자 지시로 제외",
+              "accepted_limited": "현재 정보로 임시 승인"}
     for q in package["requirements"]["requirements"]:
         row = package["requirement_coverage"][q["id"]]
         with st.expander(f"{labels[row['status']]} · {q['question']}"):
             st.write(row["reason"])
+            if row["status"] == "accepted_limited":
+                st.caption("질문별 사용자 임시 승인입니다. 아래 부족 항목과 원래 AI 판정은 충족된 것으로 바꾸지 않았습니다.")
+                st.write("원래 AI 판정: " + row["original_assessment"].get("reason", ""))
             decision = package.get("requirement_applicability", {}).get(q["id"])
             if decision:
                 st.caption("적용 여부: " + {"applicable": "적용", "not_applicable": "해당 없음", "uncertain": "미확인"}[decision["status"]])
@@ -29,7 +33,7 @@ def render_requirement_evidence(package):
                     st.text(source["quote"])
             if row["missing_fields"]:
                 st.write("부족 항목: " + " / ".join(row["missing_fields"]))
-            st.write("충족 근거: " + (", ".join(row["evidence_ids"]) or "없음"))
+            st.write(("작성에 사용할 근거·사용자 설명: " if row["status"] == "accepted_limited" else "충족 근거: ") + (", ".join(row["evidence_ids"]) or "없음"))
     with st.expander("공유 근거·원문 출처"):
         for fact in package["items"]:
             st.markdown(f"**{fact['id']} · {fact['statement']}**")

@@ -207,13 +207,21 @@ def page_request(page, page_count, elements, active, applicability, preserved):
 
 
 def assess_requirements(engine, folder, requirements, items, applicability, human_decisions=None):
-    from requirement_intervention import pause
+    from requirement_intervention import pause, writing_allowed
     results = {}
     for q in requirements["requirements"]:
         instructions = [d for d in (human_decisions or []) if d["question_id"] == q["id"]]
         if instructions and instructions[-1]["action"] == "exclude":
             results[q["id"]] = {"status": "excluded_by_user", "evidence_ids": [], "missing_fields": [],
                 "reason": instructions[-1]["instruction"], "decision_id": instructions[-1]["id"]}
+            continue
+        if instructions and instructions[-1]["action"] == "accept_limited":
+            accepted = instructions[-1]
+            original = accepted["original_assessment"]
+            results[q["id"]] = {"status": "accepted_limited",
+                "evidence_ids": [f["id"] for f in items if q["id"] in f["requirement_ids"] and writing_allowed(f, human_decisions or [])],
+                "missing_fields": original.get("missing_fields", q["expected_fields"]),
+                "reason": accepted["instruction"], "decision_id": accepted["id"], "original_assessment": original}
             continue
         decision = applicability[q["id"]]
         if decision["status"] != "applicable" and not instructions:
@@ -315,21 +323,22 @@ def extract_requirement_evidence(pdf, engine, requirements):
 
 
 def finish_assessment(pdf, engine, folder, source, requirements, items, applicability, scanned_pages, pending_pages):
-    from requirement_intervention import apply_decisions
+    from requirement_intervention import apply_decisions, writing_allowed
     items, history = apply_decisions(engine, folder, requirements, items, source)
     questions = {q["id"]: q for q in requirements["requirements"]}
     elements = {e["element_id"]: e for e in source["elements"]}
     checks = assess_requirements(engine, folder, requirements, items, applicability, history)
-    usable = [copy.deepcopy(f) for f in items if writing_eligible(f)]
+    usable = [copy.deepcopy(f) for f in items if writing_allowed(f, history)]
     missing = [q["id"] for q in questions.values() if q["priority"] == "required" and checks[q["id"]]["status"] in ("partial", "missing")]
     uncertain = [q["id"] for q in questions.values() if q["priority"] == "required" and checks[q["id"]]["status"] == "applicability_uncertain"]
     unreadable = [f"p{r['page']}: 판독하지 못한 이미지" for r in source.get("pdf_image_inventory", []) if r["state"] == "unreadable_image"]
     unreadable += [f"p{page}: 검색 가능한 원문 요소 없음" for page in range(1, source["page_count"] + 1) if page not in scanned_pages]
     unreadable += [f"p{page}: 페이지 근거 추출의 출처·연결 검증 실패 (1회 보정 후 보류)" for page in pending_pages]
-    excluded = [f["id"] for f in items if not writing_eligible(f)]
+    excluded = [f["id"] for f in items if not writing_allowed(f, history)]
     completion = {"scope": "evidence_requirements", "pages_scanned": len(scanned_pages),
         "source_pages": source["page_count"], "unresolved_requirement_ids": missing,
         "unresolved_applicability_ids": uncertain,
+        "provisionally_accepted_question_ids": [key for key, row in checks.items() if row["status"] == "accepted_limited"],
         "pending_extraction_pages": pending_pages,
         "unresolved_source_items": unreadable, "quarantined_fact_ids": excluded,
         "ready_for_drafting": bool(usable) and not missing and not uncertain and not unreadable and not excluded,
@@ -350,7 +359,7 @@ def finish_assessment(pdf, engine, folder, source, requirements, items, applicab
         "evidence_requirements": requirements, "requirement_coverage": checks,
         "requirement_applicability": applicability,
         "human_guidance": history,
-        "open_questions": [q["question"] for q in questions.values() if checks[q["id"]]["status"] not in ("sufficient", "not_applicable", "excluded_by_user")]}) if usable else None
+        "open_questions": [q["question"] for q in questions.values() if checks[q["id"]]["status"] not in ("sufficient", "not_applicable", "excluded_by_user", "accepted_limited")]}) if usable else None
     result = {"version": VERSION, "schema_version": 2, "source": source["source"],
         "collection_protocol": "page-scoped-v2",
         "title": Path(pdf).stem, "items": items,

@@ -82,6 +82,7 @@ INTERPRET = """사용자가 현재 근거 질문을 어떻게 처리하라고 �
 exclude: 해당 질문의 내용을 작성 계획·초안에서 제외하라는 명시적 지시.
 provide_information: 사용자가 질문에 답할 실제 추가 연구 기록을 제공한 경우.
 recheck: 기존 연구 원문을 다시 찾아보거나 판정을 재검토하라는 지시.
+accept_limited: 사용자가 부족한 부분을 남긴 채 현재 정보로 임시 승인하여 진행하라고 명시한 경우. 전체 충족·원문 검증 완료와 다르다.
 clarify: 의미가 불명확하거나, 근거 없이 충족 처리·검사 우회만 요구한 경우.
 자동으로 제외하지 않는다. 한 질문의 지시를 다른 질문에 확대하지 않는다.
 provided_text에는 사용자 메시지에 실제 있는 추가 기록 부분을 그대로 복사한다. 새 사실을 작성하지 않는다.
@@ -89,36 +90,85 @@ provided_text에는 사용자 메시지에 실제 있는 추가 기록 부분을
 writing_instruction에는 계획·초안에 적용할 범위와 제한을 적는다. clear하지 않으면 clarify와 확인할 질문을 explanation에 쓴다."""
 
 
-def submit_instruction(engine, folder, pending_id, text):
+def _waiting_question(folder, pending_id, text):
     folder = filesystem_path(folder)
     pending = read_json(folder / "pending-question.json")
     if not pending or pending["id"] != pending_id or pending["status"] != "waiting_for_user":
         raise ValueError("대기 질문이 변경됐습니다. 최신 질문을 확인해주세요.")
     if not text.strip():
         raise ValueError("어떻게 처리할지 지시를 입력해주세요.")
-    schema = object_schema({"action": {"type": "string", "enum": ["exclude", "provide_information", "recheck", "clarify"]},
-        "provided_text": {"type": "string"}, "pages": {"type": "array", "items": {"type": "integer", "minimum": 1}},
-        "writing_instruction": {"type": "string"}, "explanation": {"type": "string"}})
-    value = engine.call(folder / "human-input", "interpret-instruction", INTERPRET,
-        {"question": pending["question"], "assessment": pending["assessment"], "user_instruction": text}, schema)
-    action = value["action"]
-    if action not in {"exclude", "provide_information", "recheck", "clarify"}:
-        raise ValueError("사용자 지시의 처리 방식이 잘못됐습니다.")
-    if action == "clarify":
-        raise ValueError(value["explanation"])
-    supplied = value["provided_text"]
-    if action == "provide_information" and (not supplied.strip() or supplied not in text):
-        raise ValueError("추가 정보는 입력한 메시지의 원문으로 확인되어야 합니다.")
-    if any(type(p) is not int or p < 1 for p in value["pages"]):
-        raise ValueError("재탐색 페이지 번호가 잘못됐습니다.")
+    return folder, pending
+
+
+def _save_instruction(folder, pending, text, value):
     history = decisions(folder)
     record = {**value, "question_id": pending["question"]["id"], "question": pending["question"],
-              "instruction": text, "pending_id": pending_id, "created_at": datetime.now(timezone.utc).isoformat()}
+              "instruction": text, "pending_id": pending["id"], "created_at": datetime.now(timezone.utc).isoformat()}
+    if value["action"] == "accept_limited":
+        record["original_assessment"] = copy.deepcopy(pending["assessment"])
+        record["acceptance_scope"] = "current_question_in_current_source_run"
     record["id"] = fingerprint(record)[:20]
     history.append(record)
     write_json(folder / "human-decisions.json", history)
     write_json(folder / "pending-question.json", {**pending, "status": "instruction_saved", "decision_id": record["id"]})
     return record
+
+
+def accept_limited_instruction(folder, pending_id, text):
+    """Explicit UI acceptance is deterministic; no model may veto or upgrade it to verified."""
+    folder, pending = _waiting_question(folder, pending_id, text)
+    return _save_instruction(folder, pending, text, {
+        "action": "accept_limited", "provided_text": text, "pages": [],
+        "acceptance_method": "explicit_button",
+        "writing_instruction": "이 질문은 사용자가 설명한 범위에서 짧게 반영한다. 부족한 세부 기준·수치·실험을 추가하지 않는다.",
+        "explanation": "현재 질문을 사용자 판단으로 임시 승인했습니다. 설명한 범위로 작성하고 부족 항목과 원래 판정은 검토 기록에 보존합니다."})
+
+
+def submit_instruction(engine, folder, pending_id, text):
+    folder, pending = _waiting_question(folder, pending_id, text)
+    schema = object_schema({"action": {"type": "string", "enum": ["exclude", "provide_information", "recheck", "accept_limited", "clarify"]},
+        "provided_text": {"type": "string"}, "pages": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "writing_instruction": {"type": "string"}, "explanation": {"type": "string"}})
+    value = engine.call(folder / "human-input", "interpret-instruction", INTERPRET,
+        {"question": pending["question"], "assessment": pending["assessment"], "user_instruction": text}, schema)
+    action = value["action"]
+    if action not in {"exclude", "provide_information", "recheck", "accept_limited", "clarify"}:
+        raise ValueError("사용자 지시의 처리 방식이 잘못됐습니다.")
+    if action == "clarify":
+        raise ValueError(value["explanation"])
+    if action == "accept_limited":
+        value["provided_text"] = text
+    supplied = value["provided_text"]
+    if action == "provide_information" and (not supplied.strip() or supplied not in text):
+        raise ValueError("추가 정보는 입력한 메시지의 원문으로 확인되어야 합니다.")
+    if any(type(p) is not int or p < 1 for p in value["pages"]):
+        raise ValueError("재탐색 페이지 번호가 잘못됐습니다.")
+    return _save_instruction(folder, pending, text, value)
+
+
+def provisional_fact(decision):
+    """Keep the exact user account as provisional context, never as a PDF-verified result."""
+    return {"id": "U" + decision["id"], "statement": "사용자 제공 설명: " + decision["instruction"],
+        "limits": "사용자가 이 질문에 한해 현재 정보로 진행하도록 임시 승인한 설명이다. PDF 대조·독립 검증 완료를 뜻하지 않는다. 설명 밖의 세부 기준·수치·실험·입증된 원인을 만들지 않는다.",
+        "kind": "setup", "claim_status": "interpretation", "source_origin": "research_note",
+        "support": "user_accepted", "support_note": "원문 검증과 별도로 기록한 사용자 임시 승인",
+        "numeric_issues": [], "attribution_preserved": True, "writing_role": "context_only",
+        "conditions": [], "observations": [], "parameters": [], "measurements": [],
+        "requirement_ids": [decision["question_id"]], "user_provided": True,
+        "provisional_decision_id": decision["id"], "supplemental_reason": "질문별 사용자 임시 승인 설명",
+        "sources": [{"element_id": "user:" + decision["id"], "page": 0, "origin": "user_addendum",
+                     "quote": decision["instruction"]}]}
+
+
+def writing_allowed(fact, history):
+    from research_extract_v3 import writing_eligible
+    if fact.get("support") != "user_accepted":
+        return writing_eligible(fact)
+    latest = {}
+    for d in history:
+        latest[d["question_id"]] = d
+    # Match the exact saved account; a general acceptance cannot release arbitrary rejected facts.
+    return any(d["action"] == "accept_limited" and fact == provisional_fact(d) for d in latest.values())
 
 
 def supplemental_facts(engine, folder, decision, source):
@@ -178,6 +228,10 @@ def apply_decisions(engine, folder, requirements, items, source):
             for fact in supplemental_facts(engine, folder, row, source):
                 if fact["id"] not in {f["id"] for f in items}:
                     items.append(fact)
+    latest = {d["question_id"]: d for d in history}
+    for row in latest.values():
+        if row["action"] == "accept_limited":
+            items.append(provisional_fact(row))
     return items, history
 
 
@@ -185,9 +239,10 @@ def reference_decisions(catalog, research):
     """Remove excluded criteria from all writer/reviewer guides, retaining shared active criteria."""
     catalog = copy.deepcopy(catalog)
     questions = research.get("evidence_requirements", {}).get("requirements", [])
-    excluded = {key for q in questions if research.get("requirement_coverage", {}).get(q["id"], {}).get("status") == "excluded_by_user"
+    relaxed = {"excluded_by_user", "accepted_limited"}
+    excluded = {key for q in questions if research.get("requirement_coverage", {}).get(q["id"], {}).get("status") in relaxed
                 for key in q.get("guideline_ids", [])}
-    active = {key for q in questions if research.get("requirement_coverage", {}).get(q["id"], {}).get("status") != "excluded_by_user"
+    active = {key for q in questions if research.get("requirement_coverage", {}).get(q["id"], {}).get("status") not in relaxed
               for key in q.get("guideline_ids", [])}
     blocked = excluded - active
     for guide in catalog.values():

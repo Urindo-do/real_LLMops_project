@@ -3,7 +3,7 @@
 import streamlit as st
 
 from planned_paper import PlannedPaper
-from requirement_intervention import read_json, submit_instruction
+from requirement_intervention import accept_limited_instruction, read_json, submit_instruction
 from pathlib import Path
 
 
@@ -43,11 +43,14 @@ def render_intervention(base_dir):
             "예: 정확도는 측정하지 않았으니 해당 항목은 계획과 초안에서 빼줘. / 추가 기록은 다음과 같아: … / 30페이지를 다시 찾아봐.")
         st.caption("이 지시는 해당 질문에 적용됩니다. 지시 해석과 재검토에 Upstage를 사용하고, 완료한 추출은 재사용합니다.")
         submitted = st.form_submit_button("지시를 반영하고 계속", type="primary")
-    if not submitted:
+        st.caption("부족한 세부 항목을 남기고 지금 설명한 범위로 진행하려면 임시 승인하세요. 이번 질문에만 적용되며 원래 판정은 검토 기록에 남습니다.")
+        accepted = st.form_submit_button("현재 정보로 임시 승인하고 계속")
+    if not submitted and not accepted:
         return None
     try:
         with st.spinner("사용자 지시를 해석하고 저장 중입니다..."):
-            record = submit_instruction(PlannedPaper(base_dir), pending["run_dir"], pending["id"], instruction)
+            record = (accept_limited_instruction(pending["run_dir"], pending["id"], instruction) if accepted else
+                      submit_instruction(PlannedPaper(base_dir), pending["run_dir"], pending["id"], instruction))
         st.session_state["last_requirement_instruction"] = record
         st.success(record["explanation"])
         return st.session_state["pending_requirement_request"]

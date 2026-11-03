@@ -34,7 +34,7 @@ def normalize_research(data):
             raise ValueError("각 근거에 statement 또는 finding이 필요합니다.")
         normalized.append({"id": identifier, "statement": statement,
                            "limits": fact.get("limits", ""), "sources": fact.get("sources", [])})
-        for field in ("kind", "claim_status", "source_origin", "support", "support_note", "conditions", "measurements", "parameters", "observations", "numeric_issues", "writing_role", "attribution_preserved", "requirement_ids", "supplemental_reason", "user_provided"):
+        for field in ("kind", "claim_status", "source_origin", "support", "support_note", "conditions", "measurements", "parameters", "observations", "numeric_issues", "writing_role", "attribution_preserved", "requirement_ids", "supplemental_reason", "user_provided", "provisional_decision_id"):
             if field in fact:
                 normalized[-1][field] = copy.deepcopy(fact[field])
         if "evidence_limitations" in fact:
