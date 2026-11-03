@@ -4,7 +4,10 @@ import argparse
 import hashlib
 import json
 import os
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
@@ -89,6 +92,18 @@ def rebase(value, old_base, new_base):
     return value
 
 
+def relocated_bytes(name, data, old_base, new_base):
+    """Native responses are immutable; only rewrite derived JSON that contains relocated paths."""
+    path = PurePosixPath(name)
+    if path.suffix != ".json" or path.name in ("parse-response.json", "parse-failed-response.json") or path.name.endswith(".native.json"):
+        return data
+    original = json.loads(data)
+    value = rebase(original, old_base, new_base)
+    if value == original:
+        return data
+    return (json.dumps(value, ensure_ascii=False, indent=2) + ("\n" if data.endswith(b"\n") else "")).encode("utf-8")
+
+
 def restore_state(archive_path, base):
     base = Path(base).resolve()
     with ZipFile(archive_path) as archive:
@@ -115,14 +130,74 @@ def restore_state(archive_path, base):
                 raise ValueError(f"파일 검증 실패: {name}")
         for record in manifest["files"]:
             target = local_path(base / record["path"])
-            data = archive.read(record["path"])
-            if target.suffix == ".json":
-                value = rebase(json.loads(data), manifest["original_workspace"], base)
-                data = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+            data = relocated_bytes(record["path"], archive.read(record["path"]), manifest["original_workspace"], base)
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("xb") as handle:
                 handle.write(data)
     return {"restored_files": len(manifest["files"]), "latest_evidence": str(base / manifest["latest_evidence"])}
+
+
+def repair_parse_caches(archive_path, base):
+    """Undo only the proven JSON reserialization bug, preserving checksums and local edits."""
+    base = Path(base).resolve()
+    repairs = []
+    with ZipFile(archive_path) as archive:
+        manifest = json.loads(archive.read(MANIFEST))
+        if manifest.get("version") != VERSION:
+            raise ValueError("지원하지 않는 연구 근거 묶음입니다.")
+        if digest((base / manifest["source_pdf"]).read_bytes()) != manifest["source"]["sha256"]:
+            raise ValueError("연구 원본 PDF가 이관 묶음과 다릅니다.")
+        for record in manifest["files"]:
+            name = PurePosixPath(record["path"])
+            if name.name not in ("parse-response.json", "parse-failed-response.json"):
+                continue
+            if name.is_absolute() or ".." in name.parts or "\\" in str(name) or ":" in str(name) or name.parts[0] != "draft_history":
+                raise ValueError("복구 대상은 저장소의 draft_history 내부여야 합니다.")
+            original = archive.read(record["path"])
+            if len(original) != record["size"] or digest(original) != record["sha256"]:
+                raise ValueError(f"이관 원본 검증 실패: {name}")
+            path = local_path(base / str(name))
+            path.relative_to(local_path(base / "draft_history"))
+            current = path.read_bytes()
+            metadata_path = path.with_name(name.name.replace("-response.json", "-manifest.json"))
+            if name.name == "parse-failed-response.json" and not metadata_path.is_file():
+                # HTTP error logs have no cache manifest and are not used as empty-image cache entries.
+                continue
+            metadata = json.loads(metadata_path.read_bytes())
+            if digest(current) == metadata.get("response_sha256"):
+                continue
+            old_bug_output = json.dumps(rebase(json.loads(original), manifest["original_workspace"], base),
+                                        ensure_ascii=False, indent=2).encode("utf-8")
+            if digest(original) != metadata.get("response_sha256") or current != old_bug_output:
+                raise ValueError(f"복원 형식 변경으로 확인할 수 없는 파일은 수정하지 않습니다: {name}")
+            repairs.append((str(name), path, current, original))
+    # Finish all checks and preserve every current file before replacing any cache.
+    if not repairs:
+        return {"repaired_files": 0, "backup_dir": None}
+    backup = local_path(base / "draft_history/cache-repairs" /
+                        (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]))
+    for name, path, current, _ in repairs:
+        if path.read_bytes() != current:
+            raise RuntimeError("검사 중 캐시가 바뀌어 복구를 중단했습니다.")
+        saved = backup / name
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        with saved.open("xb") as handle:
+            handle.write(current)
+    for _, path, current, original in repairs:
+        if path.read_bytes() != current:
+            raise RuntimeError("복구 중 캐시가 바뀌었습니다. 보존한 백업을 확인해주세요.")
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(original)
+        try:
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    report = {"repaired_files": len(repairs), "backup_dir": str(backup),
+              "files": [{"path": name, "previous_sha256": digest(current), "restored_sha256": digest(original)}
+                        for name, _, current, original in repairs]}
+    (backup / "repair-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
 
 
 def main():
@@ -135,9 +210,16 @@ def main():
     restore = commands.add_parser("restore")
     restore.add_argument("archive", type=Path)
     restore.add_argument("--base-dir", type=Path, default=BASE)
+    repair = commands.add_parser("repair-parse-cache")
+    repair.add_argument("archive", type=Path)
+    repair.add_argument("--base-dir", type=Path, default=BASE)
     args = parser.parse_args()
-    result = (export_state(BASE, args.document_root, args.output, args.include_pilot) if args.command == "export"
-              else restore_state(args.archive, args.base_dir))
+    if args.command == "export":
+        result = export_state(BASE, args.document_root, args.output, args.include_pilot)
+    elif args.command == "restore":
+        result = restore_state(args.archive, args.base_dir)
+    else:
+        result = repair_parse_caches(args.archive, args.base_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

@@ -22,6 +22,12 @@ python -m venv .venv
 
 앱에서 **input 폴더의 연구 자료 → CUDA PDF → 저장된 연구 근거 불러오기**를 선택한다. 다시 추출하거나 복구 버튼을 누를 필요가 없다. 새 모델 실행이 필요하면 `.env.example`을 참고해 이 PC에 API 키를 별도로 설정한다.
 
+2026-11-02 복원 코드 보완: Parse 및 모델 native JSON은 원본 바이트를 유지한다. 경로 변경이 없는 JSON도 재직렬화하지 않는다. 초기 복원 코드로 가져온 뒤 `Parse 원본 캐시가 변경되었습니다`가 나오면 최신 코드에서 다음 명령으로 복구한다. ZIP·원본 PDF·응답 해시 및 기존 복원 버그 출력의 일치가 확인된 캐시만 백업 후 복구하며, 원인을 확인할 수 없는 로컬 수정은 보존하고 중단한다. `--force-parse`는 필요 없다.
+
+```powershell
+python research_portability.py repair-parse-cache evaluation/extraction/v3/portable-20261102/research-state.zip
+```
+
 복원은 원본 PDF 해시·모든 파일의 SHA256을 먼저 검사하고, JSON의 기존 PC 절대 경로를 새 저장소 경로로 바꾼다. 기존 파일이 하나라도 있으면 덮어쓰지 않고 중단한다. 이미 이 PC에서 같은 문서를 작업했다면 그 기록을 별도로 보존하고 새 checkout에 복원한다. 원형 그대로의 기록은 ZIP에 남는다. 과거 `evaluation/extraction/v3/current/`는 10월 31일 비교용 스냅샷이며 이번 최신 이관본과 다르다.
 
 ## 저장된 최종 상태
