@@ -396,26 +396,46 @@ class PaperDraftOrchestrator:
                      progress_callback: Optional[ProgressCallback] = None,
                      planning_mode: str = "adaptive", project_id: str = "generic",
                      plan_only: bool = False, output_dir: Optional[str | Path] = None,
-                     extract_only: bool = False) -> Dict[str, Any]:
+                     extract_only: bool = False, evidence_mode: str = "comprehensive",
+                     research_scope: str = "", requirements_only: bool = False) -> Dict[str, Any]:
         # The default path extracts from the supplied source; fixed chapters require explicit comparison mode.
+        # research_scope is accepted for older callers but never used to generate common questions.
         if planning_mode == "adaptive":
             from planned_paper import PlannedPaper
             from paper_plan import project_profile
             engine = PlannedPaper(self.base_dir, api_key=self.api_key)
             engine.evidence_progress = progress_callback
+            if evidence_mode not in ("comprehensive", "requirements"):
+                raise ValueError("알 수 없는 근거 수집 방식입니다.")
+            requirements = None
+            reference = None
+            if evidence_mode == "requirements" or requirements_only:
+                from evidence_requirements import generate_requirements
+                reference = load_paper_structure(structure_json_path)
+                if progress_callback:
+                    progress_callback(3, "골든 작성지침에서 근거 요구사항 생성 중")
+                requirements = generate_requirements(engine, reference)
+                engine.evidence_requirements = requirements
+            if requirements_only:
+                if progress_callback:
+                    progress_callback(100, "공통 근거 질문 파일 저장 완료")
+                return {"evidence_requirements": requirements, "draft_markdown": "", "run_dir": requirements["run_dir"]}
             if extract_only:
                 extraction = engine.load_evidence(project_profile(project_id), results_json_path, research_pdf_path)
                 if progress_callback:
                     progress_callback(100, "연구 근거 추출·수집 대장 검사 종료")
-                return {"evidence_extraction": extraction, "draft_markdown": "", "run_dir": extraction["run_dir"]}
+                return {"evidence_extraction": extraction, "evidence_requirements": requirements,
+                        "draft_markdown": "", "run_dir": extraction["run_dir"]}
             research = engine.load_research(project_profile(project_id), results_json_path, research_pdf_path)
-            reference = load_paper_structure(structure_json_path)
+            if reference is None:
+                reference = load_paper_structure(structure_json_path)
             result = engine.run(research, reference, project_id, output_dir, plan_only, progress_callback)
             result["evidence_extraction"] = getattr(engine, "last_extraction", None)
+            result["evidence_requirements"] = requirements
             return result
         if planning_mode != "legacy_cuda":
             raise ValueError("알 수 없는 작성 방식입니다.")
-        if plan_only or extract_only:
+        if plan_only or extract_only or requirements_only:
             raise ValueError("추출·계획 미리보기는 adaptive 방식에서 사용할 수 있습니다.")
         if research_pdf_path is not None and results_json_path is not None:
             raise ValueError("PDF와 추출 JSON 중 하나만 선택해주세요.")

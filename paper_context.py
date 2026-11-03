@@ -46,7 +46,8 @@ def part_context(packet, key):
             "target_part": key, "target_heading": assignment["heading"], "subsection_headings": [],
             "facts": facts, "tables": tables,
             "reference_guides": _guides(packet["reference_guides"], linked),
-            "context": copy.deepcopy(packet["context"]), "allocation": assignment["allocation"]}
+            "context": copy.deepcopy(packet["context"]), "allocation": assignment["allocation"],
+            "human_guidance": copy.deepcopy(packet.get("human_guidance", []))}
 
 
 def build_contexts(plan, research, catalog):
@@ -99,6 +100,7 @@ def build_contexts(plan, research, catalog):
                 "shared_evidence_ids": shared[:],
                 "allocation": "explicit" if mapped else "section_fallback"}
         packet = {"paper_title": plan["title"], "section_plan": section, "subsection_headings": headings,
+                  "human_guidance": copy.deepcopy(research.get("human_guidance", [])),
                   "facts": facts, "tables": tables, "reference_guides": guides,
                   "subsection_assignments": assignments,
                   "context": {key: {field: copy.deepcopy(by_id[key][field])

@@ -18,6 +18,8 @@ from paper_draft_agent import PaperDraftOrchestrator, load_paper_structure
 from paper_quality import extraction_fingerprint
 from structure_profile_view import render_reference_profiles
 from planned_paper import fingerprint as plan_fingerprint
+from requirement_intervention import RequirementInterruption
+from requirement_intervention_view import render_intervention
 
 ##################################################
 # Page Configuration
@@ -206,6 +208,14 @@ with st.sidebar:
         else:
             st.warning("⚠️ `Results & Discussion.json`이 없습니다. method_result.py를 먼저 실행하세요.")
 
+    evidence_mode = "comprehensive"
+    if adaptive:
+        collection_label = st.radio("근거 수집 방식", ["작성지침 → 요구사항 → 근거", "기존 전체 수집"])
+        evidence_mode = "requirements" if collection_label.startswith("작성지침") else "comprehensive"
+        if evidence_mode == "requirements":
+            st.caption("공통 질문은 연구 주제 입력 없이 만듭니다. 연구 일지를 넣으면 적용 여부를 판단하고 근거를 찾습니다.")
+            st.caption("공통 질문 생성에는 골든 작성지침만 Upstage로 전송합니다. 근거 추출 시에는 선택한 연구 일지를 읽습니다.")
+
     st.markdown("#### 2. 레퍼런스 스타일 프로파일")
     if structure_error:
         st.error(f"골든 샘플 분석을 읽을 수 없습니다: {structure_error}")
@@ -219,27 +229,38 @@ with st.sidebar:
     st.caption("장별 작성 후 근거 검토 → 종합 편집 → 재검토를 진행합니다. 주요 오류가 남으면 후보 초안으로 분리합니다.")
 
     st.divider()
+    requirements_btn = st.button("근거 요구사항만 만들기", use_container_width=True,
+        disabled=not adaptive or evidence_mode != "requirements" or not structure_reference or bool(structure_error))
     generate_btn = st.button("🚀 논문 초안 작성 시작", type="primary", use_container_width=True,
                              disabled=bool(structure_error))
     plan_btn = st.button("작성 계획만 만들기", use_container_width=True,
                          disabled=not adaptive or bool(structure_error))
     extract_btn = st.button("연구 근거만 추출하기", use_container_width=True, disabled=not adaptive)
     if adaptive and local_input and st.button("저장된 연구 근거 불러오기", use_container_width=True):
-        from research_extract_v3 import load_saved_evidence
-        saved_evidence = load_saved_evidence(local_input, BASE_DIR)
+        if evidence_mode == "requirements":
+            from evidence_requirements import load_requirements
+            from requirement_extraction import load_saved_requirement_evidence
+            saved_requirements = load_requirements(BASE_DIR, structure_reference) if structure_reference else None
+            saved_evidence = load_saved_requirement_evidence(local_input, BASE_DIR, saved_requirements) if saved_requirements else None
+            if saved_requirements:
+                st.session_state["evidence_requirements"] = saved_requirements
+        else:
+            from research_extract_v3 import load_saved_evidence
+            saved_evidence = load_saved_evidence(local_input, BASE_DIR)
         if saved_evidence:
             st.session_state["research_evidence_extraction"] = saved_evidence
             st.session_state["evidence_preview_only"] = True
         else:
-            st.info("이 자료의 완료 결과가 아직 없습니다. 추출이 끝난 뒤 다시 불러와 주세요.")
-    recovery_available = bool(st.session_state.get("research_evidence_extraction") or (adaptive and local_input))
+            st.info("현재 수집 방식의 저장 결과가 없습니다. Git에서 복원한 근거는 '기존 전체 수집'을 선택하면 불러올 수 있습니다.")
+    recovery_available = evidence_mode == "comprehensive" and bool(
+        (st.session_state.get("research_evidence_extraction") or {}).get("version") == "research-evidence-v3" or (adaptive and local_input))
     if st.button("미확인 근거 복구·중복 연결 검토", key="sidebar_recover_pending_evidence",
                  use_container_width=True, disabled=not recovery_available):
         try:
             from research_extract_v3 import load_saved_evidence, run_unconfirmed_recovery
             from planned_paper import PlannedPaper
             evidence = st.session_state.get("research_evidence_extraction")
-            if evidence is None and adaptive and local_input:
+            if (evidence is None or evidence.get("version") != "research-evidence-v3") and adaptive and local_input:
                 evidence = load_saved_evidence(local_input, BASE_DIR)
             if evidence is None:
                 st.info("완료된 저장 근거가 없습니다. 먼저 연구 근거를 추출해주세요.")
@@ -259,10 +280,33 @@ if structure_reference:
 # Generation Logic
 ##################################################
 
-if generate_btn or plan_btn or extract_btn:
+if adaptive and evidence_mode == "requirements" and "pending_requirement" not in st.session_state:
+    selected_source = local_input
+    if data_source_mode == "CUDA 원본 PDF 자동 분석":
+        selected_source = cuda_source if cuda_source.is_file() else None
+    if selected_source and structure_reference:
+        from evidence_requirements import load_requirements
+        from requirement_intervention import restore_pending
+        current_requirements = load_requirements(BASE_DIR, structure_reference)
+        if current_requirements:
+            restored = restore_pending(BASE_DIR, selected_source, current_requirements)
+            if restored:
+                st.session_state["pending_requirement"], st.session_state["pending_requirement_request"] = restored
+resume_request = render_intervention(BASE_DIR)
+
+if generate_btn or plan_btn or extract_btn or requirements_btn or resume_request:
     temp_pdf_path = None
+    pipeline_request = None
     try:
-        if adaptive and data_source_mode == "input 폴더의 연구 자료":
+        if resume_request:
+            adaptive = True
+            plan_btn = resume_request.get("plan_only", False)
+            extract_btn = resume_request.get("extract_only", False)
+            requirements_btn = False
+            temp_pdf_path = resume_request.get("research_pdf_path")
+        elif requirements_btn:
+            pass
+        elif adaptive and data_source_mode == "input 폴더의 연구 자료":
             if local_input is None or not local_input.is_file():
                 st.error("input 폴더에서 연구 자료를 찾을 수 없습니다.")
                 st.stop()
@@ -287,19 +331,21 @@ if generate_btn or plan_btn or extract_btn:
 
         orchestrator = PaperDraftOrchestrator()
 
-        progress_bar = st.progress(0, text="연구 근거 수집 준비 중..." if extract_btn else "논문 초안 작성 준비 중...")
+        progress_bar = st.progress(0, text="공통 근거 질문 준비 중..." if requirements_btn else "연구 근거 수집 준비 중..." if extract_btn else "논문 초안 작성 준비 중...")
         def progress_cb(pct, msg):
             progress_bar.progress(pct, text=msg)
 
-        with st.spinner("연구 근거를 수집하고 원문별 누락을 검사 중입니다..." if extract_btn else "장별 초안을 작성하고 전체 논문의 흐름을 종합 편집 중입니다..."):
-            pipeline_result = orchestrator.run_pipeline(
-                research_pdf_path=temp_pdf_path,
-                progress_callback=progress_cb,
-                planning_mode="adaptive" if adaptive else "legacy_cuda",
+        with st.spinner("골든 작성지침에서 공통 질문을 만들고 있습니다..." if requirements_btn else "연구 근거를 수집하고 검토 중입니다..." if extract_btn else "장별 초안을 작성하고 전체 논문의 흐름을 종합 편집 중입니다..."):
+            pipeline_request = resume_request or dict(
+                research_pdf_path=temp_pdf_path, planning_mode="adaptive" if adaptive else "legacy_cuda",
                 project_id="cuda" if data_source_mode in ("CUDA 원본 PDF 자동 분석", "내장된 CUDA 연구 데이터 사용") else "generic",
-                plan_only=plan_btn,
-                extract_only=extract_btn,
-            )
+                plan_only=plan_btn, extract_only=extract_btn, evidence_mode=evidence_mode,
+                requirements_only=requirements_btn)
+            pipeline_result = orchestrator.run_pipeline(**pipeline_request, progress_callback=progress_cb)
+            st.session_state.pop("pending_requirement", None)
+            st.session_state.pop("pending_requirement_request", None)
+            if pipeline_result.get("evidence_requirements"):
+                st.session_state["evidence_requirements"] = pipeline_result["evidence_requirements"]
             if pipeline_result.get("evidence_extraction"):
                 st.session_state["research_evidence_extraction"] = pipeline_result["evidence_extraction"]
                 st.session_state["evidence_preview_only"] = extract_btn
@@ -312,11 +358,17 @@ if generate_btn or plan_btn or extract_btn:
                 st.session_state["planned_review"] = pipeline_result.get("review") if adaptive else None
                 st.session_state["draft_plan_fingerprint"] = plan_fingerprint(pipeline_result["plan"]) if adaptive else None
             
-            st.toast("✅ 연구 근거를 자동 추출했습니다." if extract_btn else
+            st.toast("✅ 근거 요구사항을 저장했습니다." if requirements_btn else "✅ 연구 근거를 자동 추출했습니다." if extract_btn else
                      "✅ 작성 계획을 저장했습니다." if plan_btn else "✅ 논문 초안 작성이 완료되었습니다!")
 
+    except RequirementInterruption as interruption:
+        from document_parse import write_json
+        st.session_state["pending_requirement"] = interruption.pending
+        st.session_state["pending_requirement_request"] = pipeline_request
+        write_json(Path(interruption.pending["run_dir"]) / "interrupted-request.json", pipeline_request)
+        render_intervention(BASE_DIR)
     except Exception as e:
-        task_label = "연구 근거 추출" if extract_btn else "작성 계획 생성" if plan_btn else "초안 작성"
+        task_label = "근거 요구사항 생성" if requirements_btn else "연구 근거 추출" if extract_btn else "작성 계획 생성" if plan_btn else "초안 작성"
         st.error(f"{task_label} 중 오류가 발생했습니다: {e}")
     finally:
         if not adaptive and temp_pdf_path and os.path.exists(temp_pdf_path):
@@ -328,9 +380,23 @@ if generate_btn or plan_btn or extract_btn:
 
 draft_content = st.session_state.get("full_paper_draft", "").strip()
 
+if st.session_state.get("evidence_requirements"):
+    from evidence_requirements import render_requirements
+    requirements = st.session_state["evidence_requirements"]
+    with st.expander("절별 근거 요구사항", expanded=True):
+        st.markdown(render_requirements(requirements))
+        st.caption("저장 위치: " + requirements["run_dir"])
+        st.download_button("근거 요구사항 JSON 저장", json.dumps(requirements, ensure_ascii=False, indent=2),
+                           file_name="evidence_requirements.json", mime="application/json")
+
 if st.session_state.get("research_evidence_extraction"):
-    from research_evidence_view import render_research_evidence
-    render_research_evidence(st.session_state["research_evidence_extraction"])
+    extraction = st.session_state["research_evidence_extraction"]
+    if extraction.get("version", "").startswith("research-evidence-requirements-"):
+        from requirement_evidence_view import render_requirement_evidence
+        render_requirement_evidence(extraction)
+    else:
+        from research_evidence_view import render_research_evidence
+        render_research_evidence(extraction)
     if draft_content and st.session_state.get("evidence_preview_only"):
         st.info("연구 근거 추출 결과만 갱신했습니다. 아래에는 이전 초안이 표시되며, 새 근거를 반영하려면 초안을 다시 생성해주세요.")
 

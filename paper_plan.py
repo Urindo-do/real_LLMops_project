@@ -34,7 +34,7 @@ def normalize_research(data):
             raise ValueError("각 근거에 statement 또는 finding이 필요합니다.")
         normalized.append({"id": identifier, "statement": statement,
                            "limits": fact.get("limits", ""), "sources": fact.get("sources", [])})
-        for field in ("kind", "claim_status", "source_origin", "support", "support_note", "conditions", "measurements", "parameters", "observations", "numeric_issues", "writing_role", "attribution_preserved"):
+        for field in ("kind", "claim_status", "source_origin", "support", "support_note", "conditions", "measurements", "parameters", "observations", "numeric_issues", "writing_role", "attribution_preserved", "requirement_ids", "supplemental_reason", "user_provided"):
             if field in fact:
                 normalized[-1][field] = copy.deepcopy(fact[field])
         if "evidence_limitations" in fact:
@@ -55,10 +55,14 @@ def normalize_research(data):
                 any(len(row) != len(table["columns"]) for row in table["rows"])):
             raise ValueError("표의 행·열 구성이 잘못됐습니다.")
         table_ids.add(identifier)
-    return {"title": title, "facts": normalized, "tables": tables,
+    result = {"title": title, "facts": normalized, "tables": tables,
             "open_questions": data.get("open_questions", []),
             "provenance": data.get("provenance", data.get("evidence_status", "user_supplied_unreviewed")),
             "source": data.get("source", {})}
+    for key in ("evidence_requirements", "requirement_coverage", "requirement_applicability", "human_guidance"):
+        if key in data:
+            result[key] = copy.deepcopy(data[key])
+    return result
 
 
 def reference_catalog(reference):
