@@ -1,0 +1,317 @@
+{
+ "B1_gate": {
+  "v3_unresolved_original": 117,
+  "v3_blocking_after_gate_split": 55,
+  "cards_blocking": 0,
+  "cards_warnings": 31,
+  "cards_ready_for_drafting": true
+ },
+ "B2_context_per_call": {
+  "v3": {
+   "calls_with_usage": 3209,
+   "prompt_tokens_total": 26254338,
+   "completion_tokens_total": 14036830,
+   "prompt_tokens_mean": 8181,
+   "prompt_tokens_max": 73701
+  },
+  "cards": {
+   "calls_with_usage": 73,
+   "prompt_tokens_total": 524426,
+   "completion_tokens_total": 836203,
+   "prompt_tokens_mean": 7184,
+   "prompt_tokens_max": 15148
+  }
+ },
+ "B3_calls_and_time": {
+  "v3_model_responses": 3209,
+  "cards_calls": 46,
+  "cards_seconds": 283.3
+ },
+ "B4_reference_proxy": {
+  "v3": {
+   "kept": 29,
+   "manual_check": 11,
+   "missing_numbers": 2
+  },
+  "cards": {
+   "note": "21쪽 표본 참조 42개의 숫자 보존 대리 지표. 의미 판정이 아니다.",
+   "counts": {
+    "kept": 30,
+    "manual_check": 11,
+    "missing_numbers": 1
+   },
+   "rows": [
+    {
+     "id": "R01",
+     "page": 1,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R02",
+     "page": 1,
+     "status": "manual_check"
+    },
+    {
+     "id": "R03",
+     "page": 8,
+     "status": "missing_numbers",
+     "missing": [
+      "8"
+     ]
+    },
+    {
+     "id": "R04",
+     "page": 8,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R05",
+     "page": 8,
+     "status": "manual_check"
+    },
+    {
+     "id": "R06",
+     "page": 11,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R07",
+     "page": 11,
+     "status": "manual_check"
+    },
+    {
+     "id": "R08",
+     "page": 18,
+     "status": "manual_check"
+    },
+    {
+     "id": "R09",
+     "page": 18,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R10",
+     "page": 20,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R11",
+     "page": 20,
+     "status": "manual_check"
+    },
+    {
+     "id": "R12",
+     "page": 22,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R13",
+     "page": 29,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R14",
+     "page": 34,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R15",
+     "page": 37,
+     "status": "manual_check"
+    },
+    {
+     "id": "R16",
+     "page": 37,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R17",
+     "page": 44,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R18",
+     "page": 44,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R19",
+     "page": 44,
+     "status": "manual_check"
+    },
+    {
+     "id": "R20",
+     "page": 49,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R21",
+     "page": 50,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R22",
+     "page": 50,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R23",
+     "page": 51,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R24",
+     "page": 65,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R25",
+     "page": 65,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R26",
+     "page": 66,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R27",
+     "page": 66,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R28",
+     "page": 74,
+     "status": "manual_check"
+    },
+    {
+     "id": "R29",
+     "page": 81,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R30",
+     "page": 81,
+     "status": "manual_check"
+    },
+    {
+     "id": "R31",
+     "page": 81,
+     "status": "manual_check"
+    },
+    {
+     "id": "R32",
+     "page": 81,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R33",
+     "page": 82,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R34",
+     "page": 82,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R35",
+     "page": 82,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R36",
+     "page": 82,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R37",
+     "page": 83,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R38",
+     "page": 83,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R39",
+     "page": 83,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R40",
+     "page": 84,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R41",
+     "page": 84,
+     "status": "kept",
+     "missing": []
+    },
+    {
+     "id": "R42",
+     "page": 84,
+     "status": "manual_check"
+    }
+   ]
+  }
+ },
+ "B5_decimal_comma": {
+  "cards_flags": [
+   "S22C06: 소수 쉼표 의심: 원문 '128,893s'는 128.893s일 가능성. 근거: 천 단위로 읽으면 128893s가 total elapsed 798.78s보다 큼; 소수로 읽은 128.893s가 total 대비 16.1%와 일치",
+   "S22C06: 소수 쉼표 의심: 원문 '132,586s'는 132.586s일 가능성. 근거: 천 단위로 읽으면 132586s가 total elapsed 806.54s보다 큼; 소수로 읽은 132.586s가 total 대비 16.4%와 일치",
+   "S22C06: 소수 쉼표 의심: 원문 '119,466s'는 119.466s일 가능성. 근거: 천 단위로 읽으면 119466s가 total elapsed 790.64s보다 큼; 소수로 읽은 119.466s가 total 대비 15.1%와 일치",
+   "S22C06: 소수 쉼표 의심: 원문 '1,644s'는 1.644s일 가능성. 근거: 천 단위로 읽으면 1644s가 total elapsed 798.78s보다 큼; 소수로 읽은 1.644s가 total 대비 0.2%와 일치",
+   "S22C06: 소수 쉼표 의심: 원문 '2,077s'는 2.077s일 가능성. 근거: 천 단위로 읽으면 2077s가 total elapsed 806.54s보다 큼; 소수로 읽은 2.077s가 total 대비 0.3%와 일치",
+   "S22C06: 소수 쉼표 의심: 원문 '2,004s'는 2.004s일 가능성. 근거: 천 단위로 읽으면 2004s가 total elapsed 790.64s보다 큼; 소수로 읽은 2.004s가 total 대비 0.3%와 일치"
+  ]
+ },
+ "B6_granularity": {
+  "v3_items": 1123,
+  "v3_writing_facts": 1001,
+  "cards": 154,
+  "cards_writing": 151,
+  "cards_kinds": {
+   "setup": 11,
+   "method": 17,
+   "problem": 12,
+   "result": 110,
+   "limitation": 4
+  },
+  "cards_writing_roles": {
+   "research_fact": 43,
+   "context_only": 108
+  }
+ }
+}
